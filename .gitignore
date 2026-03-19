@@ -12,3 +12,6 @@ build/
 *.swo
 .DS_Store
 Thumbs.db
+
+# Generated reference files (run tools/compile_reference.py to create)
+reference/
