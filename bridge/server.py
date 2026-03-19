@@ -566,9 +566,17 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         rid = uuid.uuid4().hex
-        _work_queue.put((rid, cmd, params))
 
-        # Wait for the main-thread worker to process it
+        if _dispatch_mode == "direct":
+            # Execute directly on the HTTP thread.  This works in UEFN where
+            # Slate tick callbacks don't fire reliably.  Most unreal.* calls
+            # still succeed from background threads in the editor process.
+            resp = _execute_and_respond(rid, cmd, params)
+            self._respond(200, json.dumps(resp).encode())
+            return
+
+        # Tick-based dispatch: queue and wait for main-thread processing
+        _work_queue.put((rid, cmd, params))
         deadline = time.monotonic() + REQUEST_TIMEOUT_S
         while time.monotonic() < deadline:
             with _results_lock:
@@ -602,40 +610,43 @@ class _Handler(BaseHTTPRequestHandler):
         pass  # silence default stderr spam
 
 
-# ── Main-thread tick worker ────────────────────────────────────────────────
+# ── Command execution ──────────────────────────────────────────────────────
 
 _start_mono: float = 0
+_dispatch_mode: str = "direct"  # "tick" or "direct"
+_tick_health: int = 0           # incremented by tick callback
+
+
+def _execute_and_respond(rid: str, cmd: str, params: dict) -> dict:
+    """Execute a command and return the response dict.  Thread-safe logging."""
+    t0 = time.monotonic()
+    try:
+        data = run_command(cmd, params)
+        resp = {"ok": True, "result": data}
+    except Exception as exc:
+        _log(f"Command '{cmd}' failed: {exc}", "error")
+        resp = {"ok": False, "error": str(exc), "traceback": traceback.format_exc()}
+    elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+    _history.append({"command": cmd, "elapsed_ms": elapsed_ms, "ok": resp.get("ok", False)})
+    while len(_history) > HISTORY_CAP:
+        _history.pop(0)
+    return resp
 
 
 def _tick(dt: float) -> None:
-    """Drain the work queue on the editor's main thread."""
+    """Drain the work queue on the editor's main thread (if tick dispatch is active)."""
+    global _tick_health
+    _tick_health += 1
     done = 0
     while not _work_queue.empty() and done < WORKER_BATCH_SIZE:
         try:
             rid, cmd, params = _work_queue.get_nowait()
         except queue.Empty:
             break
-        t0 = time.monotonic()
-        try:
-            data = run_command(cmd, params)
-            resp = {"ok": True, "result": data}
-        except Exception as exc:
-            _log(f"Command '{cmd}' failed: {exc}", "error")
-            resp = {"ok": False, "error": str(exc), "traceback": traceback.format_exc()}
-        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
-        _history.append({"command": cmd, "elapsed_ms": elapsed_ms, "ok": resp["ok"]})
-        while len(_history) > HISTORY_CAP:
-            _history.pop(0)
+        resp = _execute_and_respond(rid, cmd, params)
         with _results_lock:
             _results[rid] = resp
         done += 1
-
-    # Expire orphaned results older than 90 s
-    cutoff = time.monotonic() - 90
-    with _results_lock:
-        stale = [k for k, v in _results.items() if v.get("_ts", 0) < cutoff]
-        for k in stale:
-            _results.pop(k, None)
 
 
 # ── Start / Stop ───────────────────────────────────────────────────────────
@@ -654,9 +665,14 @@ def _pick_port() -> int:
     raise RuntimeError(f"No free port in {PORT_RANGE_START}–{PORT_RANGE_END}")
 
 
-def start(port: int = 0) -> int:
-    """Start the bridge.  Returns the bound port."""
-    global _http, _http_thread, _tick_handle, _active_port, _start_mono
+def start(port: int = 0, mode: str = "auto") -> int:
+    """Start the bridge.  Returns the bound port.
+
+    Args:
+        port: Port to bind (0 = auto-detect).
+        mode: Dispatch mode — "auto" (detect best), "direct", or "tick".
+    """
+    global _http, _http_thread, _tick_handle, _active_port, _start_mono, _dispatch_mode
 
     if _http is not None:
         _log(f"Already running on :{_active_port}", "warn")
@@ -670,7 +686,28 @@ def start(port: int = 0) -> int:
     _http_thread = threading.Thread(target=_http.serve_forever, daemon=True)
     _http_thread.start()
 
-    _tick_handle = unreal.register_slate_post_tick_callback(_tick)
+    # Register tick callback (useful even in direct mode for background tasks)
+    try:
+        _tick_handle = unreal.register_slate_post_tick_callback(_tick)
+    except Exception as exc:
+        _log(f"Tick callback registration failed: {exc}", "warn")
+        _tick_handle = None
+
+    # Auto-detect dispatch mode
+    if mode == "auto":
+        # Check if tick callbacks are firing by waiting briefly
+        _tick_health_before = int(_tick_health)
+        time.sleep(0.15)  # ~9 frames at 60fps
+        if _tick_health > _tick_health_before:
+            _dispatch_mode = "tick"
+            _log("Dispatch: tick-based (Slate ticks detected)")
+        else:
+            _dispatch_mode = "direct"
+            _log("Dispatch: direct (Slate ticks not firing, using HTTP thread)")
+    else:
+        _dispatch_mode = mode
+        _log(f"Dispatch: {mode} (manual)")
+
     _log(f"Bridge v{VERSION} listening on http://127.0.0.1:{port}")
     _log(f"{len(_commands)} commands registered")
     return port
