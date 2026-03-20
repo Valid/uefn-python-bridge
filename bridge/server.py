@@ -589,6 +589,13 @@ def _cmd_redo() -> dict:
         return {"success": False, "error": str(exc)}
 
 
+@command("fix_throttle")
+def _cmd_fix_throttle() -> dict:
+    """Disable 'Use Less CPU when in Background' — callable at any time."""
+    _disable_background_throttle()
+    return {"success": True}
+
+
 # ── HTTP layer ─────────────────────────────────────────────────────────────
 
 
@@ -654,12 +661,7 @@ class _Handler(BaseHTTPRequestHandler):
             # background throttle in case user re-enabled it
             if not throttle_retry and (time.monotonic() - deadline + REQUEST_TIMEOUT_S) > REQUEST_TIMEOUT_S * 0.5:
                 throttle_retry = True
-                try:
-                    # Queue the throttle disable as a tick job so it runs
-                    # when/if the editor does process a tick
-                    _queue.put(("__throttle__", None, {}))
-                except Exception:
-                    pass
+                _disable_background_throttle()
             time.sleep(POLL_SLEEP_S)
         self._respond(504, json.dumps({"ok": False, "error": f"'{cmd}' timed out ({REQUEST_TIMEOUT_S}s). Unreal API calls require the editor main thread — ensure UEFN is focused."}).encode())
 
@@ -693,7 +695,7 @@ _dispatch_mode: str = "direct"  # "tick" or "direct"
 _tick_health: int = 0           # incremented by tick callback
 
 # Commands that are safe to run from any thread (no Unreal subsystem calls)
-_THREAD_SAFE_COMMANDS = frozenset({"status", "log", "history", "shutdown", "reload"})
+_THREAD_SAFE_COMMANDS = frozenset({"status", "log", "history", "shutdown", "reload", "fix_throttle"})
 
 
 def _execute_and_respond(rid: str, cmd: str, params: dict) -> dict:
@@ -722,10 +724,6 @@ def _tick(dt: float) -> None:
             rid, cmd, params = _work_queue.get_nowait()
         except queue.Empty:
             break
-        # Handle throttle-disable sentinel
-        if rid == "__throttle__":
-            _disable_background_throttle()
-            continue
         resp = _execute_and_respond(rid, cmd, params)
         with _results_lock:
             _results[rid] = resp
