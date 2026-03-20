@@ -314,6 +314,35 @@ def _cmd_actors_spawn(
         return _do()
 
 
+@command("actors.duplicate")
+def _cmd_actors_duplicate(
+    source: str,
+    location: Optional[List[float]] = None,
+    rotation: Optional[List[float]] = None,
+    label: str = "",
+    transaction: str = "",
+) -> dict:
+    """Duplicate an existing actor (preserves mesh, materials, properties).
+    source: label or path of actor to duplicate."""
+    def _do():
+        src = _find_actor(source)
+        sub = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+        # Duplicate via EditorActorSubsystem
+        dup = sub.duplicate_actor(src)
+        if dup is None:
+            raise RuntimeError(f"Failed to duplicate {source}")
+        if location:
+            dup.set_actor_location(unreal.Vector(*location), False, False)
+        if rotation:
+            dup.set_actor_rotation(unreal.Rotator(*rotation), False)
+        if label:
+            dup.set_actor_label(label)
+        return {"actor": actor_summary(dup)}
+    txn = transaction or f"Duplicate {source}"
+    with unreal.ScopedEditorTransaction(txn):
+        return _do()
+
+
 @command("actors.delete")
 def _cmd_actors_delete(targets: List[str], transaction: str = "") -> dict:
     txn = transaction or f"Delete {len(targets)} actor(s)"
