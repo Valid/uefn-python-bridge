@@ -22,39 +22,36 @@ No vendor lock-in, no MCP, no SDK dependencies inside the editor.
 - **API introspection tools** — dump the full UEFN API and generate `.pyi` stubs
 - **Zero C++ compilation** — pure Python, stdlib only inside the editor
 
+## Super-Quick Start (AI Agent)
+
+Paste this into your AI agent of choice (Claude Code, Cursor, ChatGPT, etc.):
+
+> Clone https://github.com/Valid/uefn-python-bridge and walk me through setting it up with my UEFN project.
+
+The agent will clone the repo, read `RULES.md`, and guide you through enabling Python scripting and starting the bridge. That's it.
+
 ## Quick Start
 
 ### 1. Enable Python in UEFN
 
 1. Open your project in UEFN
 2. **Project dropdown → Project Settings → Enable Python Editor Scripting**
-3. The editor will recompile Verse and enable Python automatically
 
 ### 2. Start the bridge
 
-**Option A — Manual start:**
-
-In UEFN: **Tools → Execute Python Script** → select `bridge/server.py`
-
-You should see in the Output Log:
-```
-[Bridge 14:30:00] Bridge v0.1.0 listening on http://127.0.0.1:9210
-[Bridge 14:30:00] 30 commands registered
-```
-
-**Option B — Auto-start on project open:**
-
-Copy the `bridge/` folder to your project's `Content/Python/` directory, then
-copy `bridge/startup.py` as `Content/Python/init_unreal.py`:
+In UEFN's Output Log command bar (bottom of the Output Log panel), type:
 
 ```
-YourProject/Content/Python/
-├── bridge/
-│   ├── __init__.py
-│   ├── server.py
-│   └── ...
-└── init_unreal.py    ← copy of bridge/startup.py
+py "path/to/uefn-python-bridge/bridge/server.py"
 ```
+
+You should see:
+```
+[Bridge] Bridge v0.1.0 listening on http://127.0.0.1:9210
+[Bridge] 30 commands registered
+```
+
+> **Tip:** Use backslashes in the path for UEFN's file picker, e.g. `py "C:\Users\you\uefn-python-bridge\bridge\server.py"`
 
 ### 3. Send commands
 
@@ -85,7 +82,7 @@ const resp = await fetch("http://127.0.0.1:9210", {
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
     command: "actors.spawn",
-    params: { asset_path: "/Engine/BasicShapes/Sphere", location: [0, 0, 200] }
+    params: { actor_class: "PointLight", location: [0, 0, 200], label: "MyLight" }
   })
 });
 const data = await resp.json();
@@ -109,15 +106,21 @@ The rules file teaches the LLM everything it needs to generate working UEFN Pyth
 
 | Category | Commands |
 |----------|----------|
-| **System** | `status`, `exec`, `log`, `history`, `undo`, `redo` |
-| **Actors** | `actors.list`, `actors.selected`, `actors.spawn`, `actors.delete`, `actors.transform`, `actors.properties`, `actors.set_property` |
+| **System** | `status`, `exec`, `log`, `history`, `undo`, `redo`, `reload`, `shutdown`, `fix_throttle` |
+| **Actors** | `actors.list`, `actors.selected`, `actors.spawn`, `actors.duplicate`, `actors.delete`, `actors.transform`, `actors.properties`, `actors.set_property`, `actors.set_color` |
 | **Assets** | `assets.list`, `assets.info`, `assets.exists`, `assets.rename`, `assets.duplicate`, `assets.delete`, `assets.save`, `assets.search`, `assets.selected`, `assets.import_task` |
 | **Level** | `level.info`, `level.save` |
 | **Viewport** | `viewport.camera`, `viewport.set_camera` |
-| **Materials** | `materials.create_instance` |
 | **Batch** | `batch.exec` |
 
 The `exec` command runs arbitrary Python inside the editor — if a structured command doesn't exist for what you need, `exec` can do it.
+
+### Notable Commands
+
+- **`actors.set_color`** — creates a persistent `MaterialInstanceConstant` and applies it. Pass `color: [r, g, b, a]` (0.0–1.0).
+- **`actors.duplicate`** — clones an existing actor with all its meshes, materials, and properties intact. Great for creating copies of creative props.
+- **`batch.exec`** — runs multiple commands in a single undo transaction.
+- **`fix_throttle`** — disables UEFN's "Use Less CPU when in Background" so commands work when UEFN isn't focused.
 
 ## Project Structure
 
@@ -126,7 +129,7 @@ uefn-python-bridge/
 ├── bridge/
 │   ├── server.py       ← HTTP server (runs inside UEFN)
 │   ├── client.py       ← Python client (runs outside UEFN)
-│   └── startup.py      ← Auto-start script (copy as init_unreal.py)
+│   └── startup.py      ← Auto-start script (for standard UE5 projects)
 ├── tools/
 │   ├── introspect_api.py   ← Dump full UEFN API to JSON
 │   └── generate_stubs.py   ← Generate .pyi for IDE autocomplete
@@ -144,13 +147,13 @@ uefn-python-bridge/
 The bridge server runs inside the UEFN editor process:
 
 1. A background thread runs an HTTP server on `127.0.0.1:9210`
-2. Incoming commands are queued
-3. A Slate tick callback drains the queue on the **main editor thread**
+2. Incoming commands are queued to the main editor thread
+3. A Slate tick callback drains the queue every editor frame
 4. Results are returned via the HTTP response
 
-This is necessary because all `unreal.*` API calls must happen on the main
-thread.  The tick callback fires every editor frame (30–120 fps), so commands
-execute with sub-frame latency.
+All `unreal.*` API calls must happen on the main thread — the tick callback ensures this. Thread-safe commands (`status`, `log`, `history`, etc.) bypass the queue and respond instantly.
+
+The bridge starts in direct mode and automatically upgrades to tick mode once Slate ticks are detected (usually within 1–2 seconds of editor startup).
 
 ## Tools
 
@@ -159,7 +162,7 @@ execute with sub-frame latency.
 Run inside UEFN to dump all available Python types:
 
 ```
-Tools → Execute Python Script → tools/introspect_api.py
+py "path/to/tools/introspect_api.py"
 ```
 
 Output: `<Project>/Saved/uefn_api_introspection.json`
@@ -169,7 +172,7 @@ Output: `<Project>/Saved/uefn_api_introspection.json`
 Generate `.pyi` stubs for IDE autocomplete:
 
 ```
-Tools → Execute Python Script → tools/generate_stubs.py
+py "path/to/tools/generate_stubs.py"
 ```
 
 Output: `<Project>/Saved/unreal.pyi`
@@ -195,18 +198,31 @@ from bridge.client import UEFNBridge
 ue = UEFNBridge(port=9215)
 ```
 
+## Important Notes
+
+- **UEFN ≠ Unreal Engine.** Many standard UE5 Python APIs are missing or different. The `RULES.md` file documents what works and what doesn't.
+- **Background throttle.** UEFN throttles tick callbacks when not focused. The bridge auto-disables this on start, but if commands time out, run `fix_throttle` or click the UEFN window.
+- **Port reuse.** If UEFN crashes with the bridge running, the port may stay bound until you restart UEFN. The bridge detects and handles zombie ports on next startup.
+- **`init_unreal.py` auto-start** does not work in UEFN (only standard Unreal Engine). Use the manual `py "..."` command in the Output Log.
+
 ## Requirements
 
-- UEFN with Python scripting enabled (see Quick Start step 1)
+- UEFN with Python Editor Scripting enabled
 - Python 3.10+ on host for the client library (optional — curl works too)
 
 ## Contributing
 
-PRs welcome.  If you add new commands to `bridge/server.py`, please:
+PRs welcome. If you add new commands to `bridge/server.py`, please:
 1. Use the `@command("category.name")` decorator
 2. Add type hints and a docstring
 3. Add an example in `examples/`
 4. Update `RULES.md` with the new command
+
+## Support
+
+- Issues: [GitHub Issues](https://github.com/Valid/uefn-python-bridge/issues)
+- Contact: jon@fchq.io
+- Discord: [discord.gg/fchq](https://discord.gg/fchq)
 
 ## License
 
