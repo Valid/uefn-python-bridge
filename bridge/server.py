@@ -775,8 +775,17 @@ def start(port: int = 0, mode: str = "auto") -> int:
     global _http, _http_thread, _tick_handle, _active_port, _start_mono, _dispatch_mode
 
     if _http is not None:
-        _log(f"Already running on :{_active_port}", "warn")
-        return _active_port
+        # Check if previous server is actually alive
+        if _http_thread and _http_thread.is_alive():
+            _log(f"Already running on :{_active_port}", "warn")
+            return _active_port
+        else:
+            _log("Previous server died — cleaning up and restarting")
+            try:
+                _http.server_close()
+            except Exception:
+                pass
+            _http = None
 
     _disable_background_throttle()
 
@@ -785,7 +794,13 @@ def start(port: int = 0, mode: str = "auto") -> int:
     _active_port = port
     _start_mono = time.monotonic()
 
-    _http_thread = threading.Thread(target=_http.serve_forever, daemon=True)
+    def _serve():
+        try:
+            _http.serve_forever()
+        except Exception as exc:
+            _log(f"HTTP server crashed: {exc}", "error")
+
+    _http_thread = threading.Thread(target=_serve, daemon=True)
     _http_thread.start()
 
     # Register tick callback (useful even in direct mode for background tasks)
