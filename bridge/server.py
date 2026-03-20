@@ -749,20 +749,59 @@ def _pick_port() -> int:
 def _disable_background_throttle() -> None:
     """Disable 'Use Less CPU when in Background' so tick callbacks fire
     even when UEFN is not the focused window."""
+    success = False
+
+    # Method 1: EditorPerformanceSettings CDO
     try:
         settings = unreal.get_default_object(unreal.EditorPerformanceSettings)
         if settings.get_editor_property("use_less_cpu_when_in_background"):
             settings.set_editor_property("use_less_cpu_when_in_background", False)
-            _log("Disabled 'Use Less CPU when in Background'")
-    except Exception:
+            _log("Disabled 'Use Less CPU when in Background' via EditorPerformanceSettings")
+            success = True
+    except Exception as e:
+        _log(f"EditorPerformanceSettings method failed: {e}")
+
+    # Method 2: Direct CVar access
+    if not success:
+        try:
+            cvar = unreal.ConsoleVariable.find("t.IdleWhenNotForeground")
+            if cvar:
+                cvar.set_int(0)
+                _log("Disabled background throttle via CVar")
+                success = True
+        except Exception:
+            pass
+
+    # Method 3: Console command with world context
+    if not success:
         try:
             unreal.SystemLibrary.execute_console_command(
                 None, "t.IdleWhenNotForeground 0"
             )
             _log("Disabled background throttle via console command")
+            success = True
         except Exception:
-            _log("WARNING: Could not disable background CPU throttle — "
-                 "commands may timeout when UEFN is not focused")
+            pass
+
+    # Method 4: Direct GEngine approach
+    if not success:
+        try:
+            # Access the global engine setting directly
+            code = (
+                "import unreal\n"
+                "unreal.PythonBridgeLibrary.execute_console_command('t.IdleWhenNotForeground 0')"
+            )
+            exec(code)
+            _log("Disabled background throttle via PythonBridgeLibrary")
+            success = True
+        except Exception:
+            pass
+
+    if not success:
+        _log("WARNING: Could not disable background CPU throttle — "
+             "commands may timeout when UEFN is not focused. "
+             "Manually uncheck: Edit → Editor Preferences → General → Performance → "
+             "'Use Less CPU when in Background'")
 
 
 def start(port: int = 0, mode: str = "auto") -> int:
@@ -812,15 +851,23 @@ def start(port: int = 0, mode: str = "auto") -> int:
 
     # Auto-detect dispatch mode
     if mode == "auto":
-        # Check if tick callbacks are firing by waiting briefly
-        _tick_health_before = int(_tick_health)
-        time.sleep(0.15)  # ~9 frames at 60fps
-        if _tick_health > _tick_health_before:
-            _dispatch_mode = "tick"
-            _log("Dispatch: tick-based (Slate ticks detected)")
-        else:
-            _dispatch_mode = "direct"
-            _log("Dispatch: direct (Slate ticks not firing, using HTTP thread)")
+        # Start in direct mode, but keep checking for ticks in background.
+        # During editor startup, ticks often don't fire yet.
+        _dispatch_mode = "direct"
+        _log("Dispatch: starting in direct mode, will upgrade to tick mode when available")
+
+        def _tick_upgrader():
+            """Background thread that upgrades to tick dispatch once Slate ticks are detected."""
+            global _dispatch_mode
+            for attempt in range(30):  # Check for up to ~30 seconds
+                time.sleep(1.0)
+                if _tick_health > 0:
+                    _dispatch_mode = "tick"
+                    _log("Dispatch: upgraded to tick mode (Slate ticks detected)")
+                    return
+            _log("Dispatch: staying in direct mode (no Slate ticks after 30s)")
+
+        threading.Thread(target=_tick_upgrader, daemon=True).start()
     else:
         _dispatch_mode = mode
         _log(f"Dispatch: {mode} (manual)")
