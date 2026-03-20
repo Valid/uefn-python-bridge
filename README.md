@@ -213,7 +213,6 @@ PRs welcome. If you add new commands to `bridge/server.py`, please:
 ## Support
 
 - Issues: [GitHub Issues](https://github.com/Valid/uefn-python-bridge/issues)
-- Contact: jon@fchq.io
 - Discord: [discord.gg/fchq](https://discord.gg/fchq)
 
 ## License
