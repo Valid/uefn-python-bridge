@@ -39,19 +39,15 @@ The agent will clone the repo, read `RULES.md`, and guide you through enabling P
 
 ### 2. Start the bridge
 
-In UEFN's Output Log command bar (bottom of the Output Log panel), type:
+In UEFN: **Tools → Execute Python Script** → navigate to `bridge/server.py` and open it.
 
-```
-py "path/to/uefn-python-bridge/bridge/server.py"
-```
-
-You should see:
+You should see in the Output Log:
 ```
 [Bridge] Bridge v0.1.0 listening on http://127.0.0.1:9210
 [Bridge] 30 commands registered
 ```
 
-> **Tip:** Use backslashes in the path for UEFN's file picker, e.g. `py "C:\Users\you\uefn-python-bridge\bridge\server.py"`
+> **Tip:** Use backslashes in the file picker path, e.g. `C:\Users\you\uefn-python-bridge\bridge\server.py`
 
 ### 3. Send commands
 
@@ -161,9 +157,7 @@ The bridge starts in direct mode and automatically upgrades to tick mode once Sl
 
 Run inside UEFN to dump all available Python types:
 
-```
-py "path/to/tools/introspect_api.py"
-```
+**Tools → Execute Python Script** → select `tools/introspect_api.py`
 
 Output: `<Project>/Saved/uefn_api_introspection.json`
 
@@ -171,9 +165,7 @@ Output: `<Project>/Saved/uefn_api_introspection.json`
 
 Generate `.pyi` stubs for IDE autocomplete:
 
-```
-py "path/to/tools/generate_stubs.py"
-```
+**Tools → Execute Python Script** → select `tools/generate_stubs.py`
 
 Output: `<Project>/Saved/unreal.pyi`
 
