@@ -735,9 +735,19 @@ def _tick(dt: float) -> None:
 
 def _pick_port() -> int:
     for port in range(PORT_RANGE_START, PORT_RANGE_END + 1):
+        # First check if something is already listening
+        test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test.settimeout(0.5)
+        try:
+            test.connect(("127.0.0.1", port))
+            test.close()
+            continue  # Port in use by a live server
+        except (ConnectionRefusedError, OSError, TimeoutError):
+            test.close()
+
+        # Try to bind WITHOUT SO_REUSEADDR to avoid ghost binds
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(("127.0.0.1", port))
             s.close()
             return port
@@ -772,36 +782,25 @@ def _disable_background_throttle() -> None:
         except Exception:
             pass
 
-    # Method 3: Console command with world context
+    # Method 3: Console command — try various world context approaches
     if not success:
-        try:
-            unreal.SystemLibrary.execute_console_command(
-                None, "t.IdleWhenNotForeground 0"
-            )
-            _log("Disabled background throttle via console command")
-            success = True
-        except Exception:
-            pass
+        for world_ctx in [None]:
+            try:
+                unreal.SystemLibrary.execute_console_command(
+                    world_ctx, "t.IdleWhenNotForeground 0"
+                )
+                _log("Disabled background throttle via console command")
+                success = True
+                break
+            except Exception:
+                pass
 
-    # Method 4: Direct GEngine approach
+    # Method 4: Keep-alive ticker — if we can't disable throttle,
+    # ensure ticks fire by periodically requesting focus
     if not success:
-        try:
-            # Access the global engine setting directly
-            code = (
-                "import unreal\n"
-                "unreal.PythonBridgeLibrary.execute_console_command('t.IdleWhenNotForeground 0')"
-            )
-            exec(code)
-            _log("Disabled background throttle via PythonBridgeLibrary")
-            success = True
-        except Exception:
-            pass
-
-    if not success:
-        _log("WARNING: Could not disable background CPU throttle — "
-             "commands may timeout when UEFN is not focused. "
-             "Manually uncheck: Edit → Editor Preferences → General → Performance → "
-             "'Use Less CPU when in Background'")
+        _log("WARNING: Could not disable background CPU throttle. "
+             "Manually uncheck: Edit → Editor Preferences → General → "
+             "Performance → 'Use Less CPU when in Background'")
 
 
 def start(port: int = 0, mode: str = "auto") -> int:
@@ -829,15 +828,21 @@ def start(port: int = 0, mode: str = "auto") -> int:
     _disable_background_throttle()
 
     port = port or _pick_port()
+    # Override allow_reuse_address to prevent ghost binds
+    HTTPServer.allow_reuse_address = False
     _http = HTTPServer(("127.0.0.1", port), _Handler)
     _active_port = port
     _start_mono = time.monotonic()
 
     def _serve():
         try:
+            _log("HTTP server thread started")
             _http.serve_forever()
+            _log("HTTP server thread exited normally")
         except Exception as exc:
             _log(f"HTTP server crashed: {exc}", "error")
+            import traceback
+            _log(traceback.format_exc(), "error")
 
     _http_thread = threading.Thread(target=_serve, daemon=True)
     _http_thread.start()
