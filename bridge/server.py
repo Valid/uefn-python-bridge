@@ -18,6 +18,12 @@ from __future__ import annotations
 import io
 import json
 import os
+
+# Store script path at load time — __file__ may not exist when run via UEFN's Execute Python Script
+try:
+    _SCRIPT_PATH = os.path.abspath(__file__)
+except NameError:
+    _SCRIPT_PATH = ""  # will be set by _discover_script_path()
 import queue
 import socket
 import sys
@@ -29,6 +35,23 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any, Callable, Dict, List, Optional
 
 import unreal
+
+# Discover script path if __file__ wasn't available
+if not _SCRIPT_PATH:
+    # Walk the call stack to find the path UEFN used to exec this script
+    import inspect
+    for fi in inspect.stack():
+        if fi.filename and "server.py" in fi.filename and os.path.isfile(fi.filename):
+            _SCRIPT_PATH = os.path.abspath(fi.filename)
+            break
+    if not _SCRIPT_PATH:
+        # Last resort: scan common locations
+        for candidate in [
+            os.path.join(os.path.expanduser("~"), ".uefn-copilot", "uefn-python-bridge", "bridge", "server.py"),
+        ]:
+            if os.path.isfile(candidate):
+                _SCRIPT_PATH = candidate
+                break
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
@@ -233,7 +256,9 @@ def _cmd_shutdown() -> dict:
 def _cmd_reload() -> dict:
     """Stop the server, re-read the script from disk, and restart."""
     import threading
-    script_path = os.path.join(os.path.dirname(__file__), "server.py")
+    script_path = _SCRIPT_PATH
+    if not script_path or not os.path.isfile(script_path):
+        return {"error": f"Cannot find script path (got: {script_path!r}). Restart manually."}
     def _do_reload():
         time.sleep(0.2)  # let the response flush
         stop()
