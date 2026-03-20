@@ -27,11 +27,8 @@ No vendor lock-in, no MCP, no SDK dependencies inside the editor.
 ### 1. Enable Python in UEFN
 
 1. Open your project in UEFN
-2. **Edit → Project Settings** → search "Python"
-3. Enable **Python Editor Script Plugin** and **Editor Scripting Utilities**
-4. Restart UEFN
-5. **Edit → Editor Preferences** → search "Python" → enable **Developer Mode**
-6. Restart UEFN
+2. **Project dropdown → Project Settings → Enable Python Editor Scripting**
+3. The editor will recompile Verse and enable Python automatically
 
 ### 2. Start the bridge
 
