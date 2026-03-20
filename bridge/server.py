@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import queue
 import socket
 import sys
@@ -168,9 +169,14 @@ def _cmd_status() -> dict:
 
 
 @command("exec")
-def _cmd_exec(code: str) -> dict:
+def _cmd_exec(code: str, transaction: str = "") -> dict:
     """Run arbitrary Python inside the editor.  Assign to `result` to return
-    a value; use print() for stdout."""
+    a value; use print() for stdout.
+
+    If ``transaction`` is provided, the code runs inside an
+    ``unreal.ScopedEditorTransaction`` so the entire operation is a single
+    undo entry in the editor.
+    """
     out, err = io.StringIO(), io.StringIO()
     old_out, old_err = sys.stdout, sys.stderr
     ns: Dict[str, Any] = {"__builtins__": __builtins__, "unreal": unreal, "result": None}
@@ -186,7 +192,11 @@ def _cmd_exec(code: str) -> dict:
             pass
     try:
         sys.stdout, sys.stderr = out, err
-        exec(code, ns)
+        if transaction:
+            with unreal.ScopedEditorTransaction(transaction):
+                exec(code, ns)
+        else:
+            exec(code, ns)
     except Exception:
         traceback.print_exc(file=err)
     finally:
@@ -206,6 +216,34 @@ def _cmd_log(tail: int = 80) -> dict:
 @command("history")
 def _cmd_history(tail: int = 30) -> dict:
     return {"entries": _history[-tail:]}
+
+
+@command("shutdown")
+def _cmd_shutdown() -> dict:
+    """Stop the bridge server.  Re-run the py command to start again."""
+    import threading
+    def _do_stop():
+        time.sleep(0.2)  # let the response flush
+        stop()
+    threading.Thread(target=_do_stop, daemon=True).start()
+    return {"message": "Shutting down..."}
+
+
+@command("reload")
+def _cmd_reload() -> dict:
+    """Stop the server, re-read the script from disk, and restart."""
+    import threading
+    script_path = os.path.join(os.path.dirname(__file__), "server.py")
+    def _do_reload():
+        time.sleep(0.2)  # let the response flush
+        stop()
+        time.sleep(0.3)
+        _log("Reloading from disk...")
+        with open(script_path, "r") as f:
+            code = f.read()
+        exec(code, {"__file__": script_path, "__name__": "__reloaded__", "__builtins__": __builtins__})
+    threading.Thread(target=_do_reload, daemon=True).start()
+    return {"message": f"Reloading from {script_path}..."}
 
 
 # ── Actor commands ─────────────────────────────────────────────────────────
@@ -244,40 +282,47 @@ def _cmd_actors_spawn(
     location: Optional[List[float]] = None,
     rotation: Optional[List[float]] = None,
     label: str = "",
+    transaction: str = "",
 ) -> dict:
-    loc = unreal.Vector(*(location or [0, 0, 0]))
-    rot = unreal.Rotator(*(rotation or [0, 0, 0]))
-    actor = None
-    if asset_path:
-        asset = unreal.EditorAssetLibrary.load_asset(asset_path)
-        if not asset:
-            raise ValueError(f"Asset not found: {asset_path}")
-        actor = unreal.EditorLevelLibrary.spawn_actor_from_object(asset, loc, rot)
-    elif actor_class:
-        cls = getattr(unreal, actor_class, None)
-        if cls is None:
-            raise ValueError(f"Class not found: {actor_class}")
-        actor = unreal.EditorLevelLibrary.spawn_actor_from_class(cls, loc, rot)
-    else:
-        raise ValueError("Provide asset_path or actor_class")
-    if actor is None:
-        raise RuntimeError("Spawn failed")
-    if label:
-        actor.set_actor_label(label)
-    return {"actor": actor_summary(actor)}
+    def _do():
+        loc = unreal.Vector(*(location or [0, 0, 0]))
+        rot = unreal.Rotator(*(rotation or [0, 0, 0]))
+        actor = None
+        if asset_path:
+            asset = unreal.EditorAssetLibrary.load_asset(asset_path)
+            if not asset:
+                raise ValueError(f"Asset not found: {asset_path}")
+            actor = unreal.EditorLevelLibrary.spawn_actor_from_object(asset, loc, rot)
+        elif actor_class:
+            cls = getattr(unreal, actor_class, None)
+            if cls is None:
+                raise ValueError(f"Class not found: {actor_class}")
+            actor = unreal.EditorLevelLibrary.spawn_actor_from_class(cls, loc, rot)
+        else:
+            raise ValueError("Provide asset_path or actor_class")
+        if actor is None:
+            raise RuntimeError("Spawn failed")
+        if label:
+            actor.set_actor_label(label)
+        return {"actor": actor_summary(actor)}
+    txn = transaction or f"Spawn {actor_class or asset_path}"
+    with unreal.ScopedEditorTransaction(txn):
+        return _do()
 
 
 @command("actors.delete")
-def _cmd_actors_delete(targets: List[str]) -> dict:
-    sub = _get_actor_sub()
-    all_actors = sub.get_all_level_actors()
-    removed = []
-    for t in targets:
-        for a in all_actors:
-            if a.get_path_name() == t or a.get_actor_label() == t:
-                sub.destroy_actor(a)
-                removed.append(t)
-                break
+def _cmd_actors_delete(targets: List[str], transaction: str = "") -> dict:
+    txn = transaction or f"Delete {len(targets)} actor(s)"
+    with unreal.ScopedEditorTransaction(txn):
+        sub = _get_actor_sub()
+        all_actors = sub.get_all_level_actors()
+        removed = []
+        for t in targets:
+            for a in all_actors:
+                if a.get_path_name() == t or a.get_actor_label() == t:
+                    sub.destroy_actor(a)
+                    removed.append(t)
+                    break
     return {"deleted": removed, "count": len(removed)}
 
 
@@ -287,14 +332,17 @@ def _cmd_actors_transform(
     location: Optional[List[float]] = None,
     rotation: Optional[List[float]] = None,
     scale: Optional[List[float]] = None,
+    transaction: str = "",
 ) -> dict:
-    actor = _find_actor(target)
-    if location is not None:
-        actor.set_actor_location(unreal.Vector(*location), False, False)
-    if rotation is not None:
-        actor.set_actor_rotation(unreal.Rotator(*rotation), False)
-    if scale is not None:
-        actor.set_actor_scale3d(unreal.Vector(*scale))
+    txn = transaction or f"Transform {target}"
+    with unreal.ScopedEditorTransaction(txn):
+        actor = _find_actor(target)
+        if location is not None:
+            actor.set_actor_location(unreal.Vector(*location), False, False)
+        if rotation is not None:
+            actor.set_actor_rotation(unreal.Rotator(*rotation), False)
+        if scale is not None:
+            actor.set_actor_scale3d(unreal.Vector(*scale))
     return {"actor": actor_summary(actor)}
 
 
@@ -311,9 +359,11 @@ def _cmd_actors_properties(target: str, properties: List[str]) -> dict:
 
 
 @command("actors.set_property")
-def _cmd_actors_set_property(target: str, property_name: str, value: Any) -> dict:
-    actor = _find_actor(target)
-    actor.set_editor_property(property_name, value)
+def _cmd_actors_set_property(target: str, property_name: str, value: Any, transaction: str = "") -> dict:
+    txn = transaction or f"Set {property_name} on {target}"
+    with unreal.ScopedEditorTransaction(txn):
+        actor = _find_actor(target)
+        actor.set_editor_property(property_name, value)
     return {"target": target, "property": property_name, "value": to_json_safe(value)}
 
 
@@ -502,17 +552,20 @@ def _cmd_materials_create_instance(
 
 
 @command("batch.exec")
-def _cmd_batch_exec(commands: List[dict]) -> dict:
-    """Execute multiple commands in sequence within a single tick."""
+def _cmd_batch_exec(commands: List[dict], transaction: str = "") -> dict:
+    """Execute multiple commands in sequence within a single undo transaction."""
+    txn = transaction or f"Batch: {len(commands)} commands"
     results = []
-    for i, item in enumerate(commands):
-        name = item.get("command", "")
-        params = item.get("params", {})
-        try:
-            r = run_command(name, params)
-            results.append({"index": i, "success": True, "result": r})
-        except Exception as exc:
-            results.append({"index": i, "success": False, "error": str(exc)})
+    with unreal.ScopedEditorTransaction(txn):
+        for i, item in enumerate(commands):
+            name = item.get("command", "")
+            params = item.get("params", {})
+            params.pop("transaction", None)  # avoid nested transactions
+            try:
+                r = run_command(name, params)
+                results.append({"index": i, "success": True, "result": r})
+            except Exception as exc:
+                results.append({"index": i, "success": False, "error": str(exc)})
     return {"results": results, "count": len(results)}
 
 
@@ -567,16 +620,28 @@ class _Handler(BaseHTTPRequestHandler):
 
         rid = uuid.uuid4().hex
 
-        if _dispatch_mode == "direct":
-            # Execute directly on the HTTP thread.  This works in UEFN where
-            # Slate tick callbacks don't fire reliably.  Most unreal.* calls
-            # still succeed from background threads in the editor process.
+        # Thread-safe commands can always run directly on the HTTP thread
+        if cmd in _THREAD_SAFE_COMMANDS:
             resp = _execute_and_respond(rid, cmd, params)
             self._respond(200, json.dumps(resp).encode())
             return
 
-        # Tick-based dispatch: queue and wait for main-thread processing
+        # Unreal-API commands must run on the main (game) thread via tick queue
         _work_queue.put((rid, cmd, params))
+
+        # If tick callback isn't processing, nudge with a one-shot callback
+        if _dispatch_mode == "direct":
+            try:
+                def _oneshot(dt):
+                    _tick(dt)
+                    try:
+                        unreal.unregister_slate_post_tick_callback(_oneshot)
+                    except Exception:
+                        pass
+                unreal.register_slate_post_tick_callback(_oneshot)
+            except Exception:
+                pass  # fall through to poll loop either way
+
         deadline = time.monotonic() + REQUEST_TIMEOUT_S
         while time.monotonic() < deadline:
             with _results_lock:
@@ -585,7 +650,7 @@ class _Handler(BaseHTTPRequestHandler):
                     self._respond(200, json.dumps(resp).encode())
                     return
             time.sleep(POLL_SLEEP_S)
-        self._respond(504, json.dumps({"ok": False, "error": f"'{cmd}' timed out ({REQUEST_TIMEOUT_S}s)"}).encode())
+        self._respond(504, json.dumps({"ok": False, "error": f"'{cmd}' timed out ({REQUEST_TIMEOUT_S}s). Unreal API calls require the editor main thread — ensure UEFN is focused."}).encode())
 
     # Allow cross-origin for web-based tools
     def do_OPTIONS(self) -> None:
@@ -615,6 +680,9 @@ class _Handler(BaseHTTPRequestHandler):
 _start_mono: float = 0
 _dispatch_mode: str = "direct"  # "tick" or "direct"
 _tick_health: int = 0           # incremented by tick callback
+
+# Commands that are safe to run from any thread (no Unreal subsystem calls)
+_THREAD_SAFE_COMMANDS = frozenset({"status", "log", "history", "shutdown", "reload"})
 
 
 def _execute_and_respond(rid: str, cmd: str, params: dict) -> dict:
@@ -743,4 +811,8 @@ def restart(port: int = 0) -> int:
 
 # ── Auto-start when executed directly ──────────────────────────────────────
 
-start()
+if __name__ != "__reloaded__":
+    start()
+else:
+    # Reload path — re-register commands already defined above, then start
+    start()
