@@ -733,6 +733,25 @@ def _pick_port() -> int:
     raise RuntimeError(f"No free port in {PORT_RANGE_START}–{PORT_RANGE_END}")
 
 
+def _disable_background_throttle() -> None:
+    """Disable 'Use Less CPU when in Background' so tick callbacks fire
+    even when UEFN is not the focused window."""
+    try:
+        settings = unreal.get_default_object(unreal.EditorPerformanceSettings)
+        if settings.get_editor_property("use_less_cpu_when_in_background"):
+            settings.set_editor_property("use_less_cpu_when_in_background", False)
+            _log("Disabled 'Use Less CPU when in Background'")
+    except Exception:
+        try:
+            unreal.SystemLibrary.execute_console_command(
+                None, "t.IdleWhenNotForeground 0"
+            )
+            _log("Disabled background throttle via console command")
+        except Exception:
+            _log("WARNING: Could not disable background CPU throttle — "
+                 "commands may timeout when UEFN is not focused")
+
+
 def start(port: int = 0, mode: str = "auto") -> int:
     """Start the bridge.  Returns the bound port.
 
@@ -745,6 +764,8 @@ def start(port: int = 0, mode: str = "auto") -> int:
     if _http is not None:
         _log(f"Already running on :{_active_port}", "warn")
         return _active_port
+
+    _disable_background_throttle()
 
     port = port or _pick_port()
     _http = HTTPServer(("127.0.0.1", port), _Handler)
