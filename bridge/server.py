@@ -643,12 +643,23 @@ class _Handler(BaseHTTPRequestHandler):
                 pass  # fall through to poll loop either way
 
         deadline = time.monotonic() + REQUEST_TIMEOUT_S
+        throttle_retry = False
         while time.monotonic() < deadline:
             with _results_lock:
                 if rid in _results:
                     resp = _results.pop(rid)
                     self._respond(200, json.dumps(resp).encode())
                     return
+            # If we've waited more than half the timeout, try re-disabling
+            # background throttle in case user re-enabled it
+            if not throttle_retry and (time.monotonic() - deadline + REQUEST_TIMEOUT_S) > REQUEST_TIMEOUT_S * 0.5:
+                throttle_retry = True
+                try:
+                    # Queue the throttle disable as a tick job so it runs
+                    # when/if the editor does process a tick
+                    _queue.put(("__throttle__", None, {}))
+                except Exception:
+                    pass
             time.sleep(POLL_SLEEP_S)
         self._respond(504, json.dumps({"ok": False, "error": f"'{cmd}' timed out ({REQUEST_TIMEOUT_S}s). Unreal API calls require the editor main thread — ensure UEFN is focused."}).encode())
 
@@ -711,6 +722,10 @@ def _tick(dt: float) -> None:
             rid, cmd, params = _work_queue.get_nowait()
         except queue.Empty:
             break
+        # Handle throttle-disable sentinel
+        if rid == "__throttle__":
+            _disable_background_throttle()
+            continue
         resp = _execute_and_respond(rid, cmd, params)
         with _results_lock:
             _results[rid] = resp
