@@ -279,6 +279,7 @@ def _cmd_actors_selected() -> dict:
 def _cmd_actors_spawn(
     asset_path: str = "",
     actor_class: str = "",
+    class_name: str = "",
     location: Optional[List[float]] = None,
     rotation: Optional[List[float]] = None,
     label: str = "",
@@ -288,16 +289,19 @@ def _cmd_actors_spawn(
         loc = unreal.Vector(*(location or [0, 0, 0]))
         rot = unreal.Rotator(*(rotation or [0, 0, 0]))
         actor = None
+        # Accept class_name as alias for actor_class
+        cls_name = actor_class or class_name
+        sub = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
         if asset_path:
-            asset = unreal.EditorAssetLibrary.load_asset(asset_path)
+            asset = unreal.load_asset(asset_path)
             if not asset:
                 raise ValueError(f"Asset not found: {asset_path}")
-            actor = unreal.EditorLevelLibrary.spawn_actor_from_object(asset, loc, rot)
-        elif actor_class:
-            cls = getattr(unreal, actor_class, None)
+            actor = sub.spawn_actor_from_object(asset, loc, rot)
+        elif cls_name:
+            cls = getattr(unreal, cls_name, None)
             if cls is None:
-                raise ValueError(f"Class not found: {actor_class}")
-            actor = unreal.EditorLevelLibrary.spawn_actor_from_class(cls, loc, rot)
+                raise ValueError(f"Class not found: {cls_name}")
+            actor = sub.spawn_actor_from_class(cls, loc, rot)
         else:
             raise ValueError("Provide asset_path or actor_class")
         if actor is None:
@@ -593,7 +597,8 @@ def _cmd_materials_create_instance(
 @command("batch.exec")
 def _cmd_batch_exec(commands: List[dict], transaction: str = "") -> dict:
     """Execute multiple commands in sequence within a single undo transaction."""
-    txn = transaction or f"Batch: {len(commands)} commands"
+    # Coerce transaction to string (AI sometimes passes bool)
+    txn = str(transaction) if transaction and not isinstance(transaction, str) else (transaction or f"Batch: {len(commands)} commands")
     results = []
     with unreal.ScopedEditorTransaction(txn):
         for i, item in enumerate(commands):
