@@ -358,6 +358,45 @@ def _cmd_actors_properties(target: str, properties: List[str]) -> dict:
     return {"target": target, "properties": vals}
 
 
+@command("actors.set_color")
+def _cmd_actors_set_color(target: str, color: List[float], transaction: str = "") -> dict:
+    """Set the color of an actor by creating a MaterialInstanceConstant and applying it.
+    color is [r, g, b, a] with 0.0-1.0 range."""
+    txn = transaction or f"Set color on {target}"
+    with unreal.ScopedEditorTransaction(txn):
+        actor = _find_actor(target)
+        
+        # Create unique material name from color
+        color_hex = "".join(f"{int(c*255):02x}" for c in color[:3])
+        mat_name = f"MI_{color_hex}"
+        mat_path = f"/Game/Materials/{mat_name}"
+        
+        # Reuse existing material if same color was already created
+        mic = None
+        if unreal.EditorAssetLibrary.does_asset_exist(mat_path):
+            mic = unreal.load_asset(mat_path)
+        else:
+            parent = unreal.load_asset("/Engine/EditorShapes/Materials/M_ShapeMaster")
+            factory = unreal.MaterialInstanceConstantFactoryNew_BaseMaterial()
+            asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
+            mic = asset_tools.create_asset(mat_name, "/Game/Materials", None, factory)
+            mic.set_editor_property("parent", parent)
+            
+            param = unreal.VectorParameterValue()
+            param.parameter_info = unreal.MaterialParameterInfo(name="ShapeColor")
+            param.parameter_value = unreal.LinearColor(r=color[0], g=color[1], b=color[2], a=color[3] if len(color) > 3 else 1.0)
+            mic.set_editor_property("vector_parameter_values", [param])
+        
+        # Apply to all material slots on all mesh components
+        applied = 0
+        for comp in actor.get_components_by_class(unreal.StaticMeshComponent):
+            for i in range(comp.get_num_materials()):
+                comp.set_material(i, mic)
+                applied += 1
+    
+    return {"target": target, "color": color, "material": mat_path, "slots_applied": applied}
+
+
 @command("actors.set_property")
 def _cmd_actors_set_property(target: str, property_name: str, value: Any, transaction: str = "") -> dict:
     txn = transaction or f"Set {property_name} on {target}"
