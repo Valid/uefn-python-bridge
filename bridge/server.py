@@ -502,22 +502,50 @@ def _cmd_assets_save(path: str) -> dict:
 
 @command("assets.search")
 def _cmd_assets_search(
+    query: str = "",
     class_name: str = "",
     directory: str = "/Game/",
     recursive: bool = True,
+    limit: int = 25,
+    spawnable_only: bool = True,
 ) -> dict:
+    """Search assets by keyword. Returns spawnable BlueprintGeneratedClass assets by default.
+    query: keyword to search in asset names (case-insensitive, supports multiple words)
+    spawnable_only: if True, only return BlueprintGeneratedClass (props you can spawn)
+    """
     reg = unreal.AssetRegistryHelpers.get_asset_registry()
-    filt = unreal.ARFilter()
-    if directory:
-        filt.package_paths = [directory]
-    filt.recursive_paths = recursive
-    if class_name:
-        try:
-            filt.class_names = [class_name]
-        except Exception:
-            pass
-    results = reg.get_assets(filt)
-    return {"assets": [to_json_safe(a) for a in results], "count": len(results)}
+    assets = reg.get_assets_by_path(directory, recursive=recursive)
+    
+    keywords = [w.lower() for w in query.split()] if query else []
+    matches = []
+    
+    for a in assets:
+        name = str(a.asset_name).lower()
+        cls = str(a.asset_class_path.asset_name) if hasattr(a, "asset_class_path") else str(a.asset_class)
+        
+        # Filter by class if specified
+        if class_name and class_name.lower() not in cls.lower():
+            continue
+        
+        # Filter to spawnable props by default
+        if spawnable_only and "BlueprintGeneratedClass" not in cls:
+            continue
+        
+        # Match all keywords
+        if keywords and not all(kw in name or kw in str(a.package_name).lower() for kw in keywords):
+            continue
+        
+        path = str(a.package_name)
+        matches.append({
+            "name": str(a.asset_name),
+            "path": path,
+            "spawn_path": f"{path}.{str(a.asset_name)}",
+            "class": cls,
+        })
+        if len(matches) >= limit:
+            break
+    
+    return {"matches": matches, "count": len(matches), "query": query}
 
 
 @command("assets.selected")
