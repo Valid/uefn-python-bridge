@@ -1,79 +1,96 @@
 # UEFN Python Bridge
 
-Control [UEFN](https://dev.epicgames.com/documentation/en-us/fortnite/unreal-editor-for-fortnite) from any AI agent, script, or automation tool via a local HTTP bridge.
+A tiny HTTP server that runs inside UEFN and lets anything on your machine talk to the editor — AI agents, Python scripts, Node apps, curl one-liners, whatever speaks HTTP.
 
-```
-Your Tool  ──HTTP POST──►  Bridge (inside UEFN)  ──main thread──►  unreal.* API
-  (AI agent, Python                                     │
-   script, CI, etc.)        127.0.0.1:9210              ▼
-                                                   Editor actions
-```
+You send a JSON command, the bridge executes it on the main editor thread, and sends back the result. That's the whole idea.
 
-**Works with any LLM** — Claude, GPT, Gemini, Cursor, or plain Python scripts.
-No vendor lock-in, no MCP, no SDK dependencies inside the editor.
+## Why
 
-## Features
+UEFN doesn't expose its Python API to anything outside the editor process. This bridge fixes that. Once it's running, any tool that can make an HTTP request can spawn actors, move things around, search assets, change materials, read properties, and run arbitrary Python inside the editor.
 
-- **30+ commands** — actors, assets, materials, viewport, levels, batch operations
-- **`exec` command** — run arbitrary Python inside the editor for anything not covered
-- **Batch execution** — send multiple commands in a single editor tick
-- **Python client** — optional convenience library for external scripts
-- **LLM rules file** — drop [`RULES.md`](RULES.md) into your AI tool for instant UEFN knowledge
-- **API introspection tools** — dump the full UEFN API and generate `.pyi` stubs
-- **Zero C++ compilation** — pure Python, stdlib only inside the editor
+No plugins, no C++, no MCP, no SDK. Just a Python script and HTTP.
 
-## Super-Quick Start (AI Agent)
+## The Fastest Way to Start
 
-Paste this into your AI agent of choice (Claude Code, Cursor, ChatGPT, etc.):
+Paste this into any AI agent (Claude Code, Cursor, ChatGPT, whatever):
 
-> Clone https://github.com/Valid/uefn-python-bridge and walk me through setting it up with my UEFN project.
+> Clone https://github.com/Valid/uefn-python-bridge and help me set it up with my UEFN project.
 
-The agent will clone the repo, read `RULES.md`, and guide you through enabling Python scripting and starting the bridge. That's it.
+It'll read the included [`RULES.md`](RULES.md), walk you through the two setup steps, and start controlling your editor.
 
-## Quick Start
+## Setup (Manual)
 
-### 1. Enable Python in UEFN
+**Step 1: Turn on Python scripting**
 
-1. Open your project in UEFN
-2. **Project dropdown → Project Settings → Enable Python Editor Scripting**
+In UEFN: **Project dropdown → Project Settings → Enable Python Editor Scripting**
 
-### 2. Start the bridge
+**Step 2: Run the bridge**
 
-In UEFN: **Tools → Execute Python Script** → navigate to `bridge/server.py` and open it.
+In UEFN: **Tools → Execute Python Script** → pick `bridge/server.py`
 
-You should see in the Output Log:
+That's it. You'll see this in the Output Log:
+
 ```
 [Bridge] Bridge v0.1.0 listening on http://127.0.0.1:9210
-[Bridge] 30 commands registered
+[Bridge] 32 commands registered
 ```
 
-> **Tip:** Use backslashes in the file picker path, e.g. `C:\Users\you\uefn-python-bridge\bridge\server.py`
+The bridge is now accepting commands.
 
-### 3. Send commands
+## Sending Commands
 
-**From Python:**
+Every command is a POST to `http://127.0.0.1:9210` with a JSON body:
+
+```json
+{"command": "actors.list"}
+```
+
+```json
+{"command": "actors.spawn", "params": {"actor_class": "PointLight", "location": [0, 0, 200]}}
+```
+
+```json
+{"command": "exec", "params": {"code": "result = len(unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors())"}}
+```
+
+The response is always `{"ok": true, "result": ...}` or `{"ok": false, "error": "..."}`.
+
+### Python Client
 
 ```python
 from bridge.client import UEFNBridge
 
 ue = UEFNBridge()
 print(ue.status())
-print(ue.actors())
-ue.spawn(asset_path="/Engine/BasicShapes/Cube", location=[500, 0, 100])
+
+# List every actor in the level
+actors = ue.actors()
+
+# Spawn a light
+ue.spawn(actor_class="PointLight", location=[500, 0, 100], label="MyLight")
+
+# Run arbitrary Python inside the editor
+count = ue.exec("result = 42 * 10")
 ```
 
-**From curl:**
+### curl
 
 ```bash
-curl -X POST http://127.0.0.1:9210 \
+# List actors
+curl -s -X POST http://127.0.0.1:9210 \
   -H "Content-Type: application/json" \
-  -d '{"command": "actors.list"}'
+  -d '{"command": "actors.list"}' | python -m json.tool
+
+# Spawn a cube
+curl -s -X POST http://127.0.0.1:9210 \
+  -H "Content-Type: application/json" \
+  -d '{"command": "actors.spawn", "params": {"asset_path": "/Engine/BasicShapes/Cube", "location": [0, 0, 200]}}'
 ```
 
-**From any HTTP client (JS, Go, Rust, etc.):**
+### JavaScript / TypeScript
 
 ```javascript
-const resp = await fetch("http://127.0.0.1:9210", {
+const res = await fetch("http://127.0.0.1:9210", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
@@ -81,139 +98,127 @@ const resp = await fetch("http://127.0.0.1:9210", {
     params: { actor_class: "PointLight", location: [0, 0, 200], label: "MyLight" }
   })
 });
-const data = await resp.json();
-console.log(data.result.actor.label);
+const { result } = await res.json();
 ```
 
-### 4. Use with AI agents
+## What Commands Exist
 
-Drop [`RULES.md`](RULES.md) into your AI tool's context:
+**Actors** — find, spawn, duplicate, delete, move, read/write properties, change color
 
-| Tool | How |
-|------|-----|
-| **Cursor** | Copy `RULES.md` → `.cursorrules` in project root |
-| **Claude Code** | Copy `RULES.md` → `CLAUDE.md` in project root |
-| **OpenClaw** | Copy `RULES.md` → skill's `SKILL.md` |
-| **ChatGPT / Gemini / etc.** | Paste `RULES.md` into system prompt or context |
+| Command | What it does | Key params |
+|---------|-------------|------------|
+| `actors.list` | All actors in the level | — |
+| `actors.selected` | Currently selected actors | — |
+| `actors.spawn` | Create a new actor | `actor_class` or `asset_path`, `location`, `label` |
+| `actors.duplicate` | Clone an existing actor (keeps mesh, materials, everything) | `source`, `location`, `label` |
+| `actors.delete` | Remove actors | `targets` (list of labels) |
+| `actors.transform` | Move / rotate / scale | `target`, `location`, `rotation`, `scale` |
+| `actors.properties` | List all editable properties | `target` |
+| `actors.set_property` | Set a property value | `target`, `property_name`, `value` |
+| `actors.set_color` | Apply a solid color (creates a persistent material) | `target`, `color` ([r,g,b,a] 0–1) |
 
-The rules file teaches the LLM everything it needs to generate working UEFN Python scripts.
+**Assets** — search the content browser, check paths, manage files
 
-## Commands
+| Command | What it does | Key params |
+|---------|-------------|------------|
+| `assets.search` | Find assets by keyword (returns spawnable props by default) | `query` ("chair", "lamp", etc.) |
+| `assets.list` | List assets in a directory | `path`, `recursive` |
+| `assets.info` | Details about one asset | `path` |
+| `assets.exists` | Check if an asset path is valid | `path` |
 
-| Category | Commands |
-|----------|----------|
-| **System** | `status`, `exec`, `log`, `history`, `undo`, `redo`, `reload`, `shutdown`, `fix_throttle` |
-| **Actors** | `actors.list`, `actors.selected`, `actors.spawn`, `actors.duplicate`, `actors.delete`, `actors.transform`, `actors.properties`, `actors.set_property`, `actors.set_color` |
-| **Assets** | `assets.list`, `assets.info`, `assets.exists`, `assets.rename`, `assets.duplicate`, `assets.delete`, `assets.save`, `assets.search`, `assets.selected`, `assets.import_task` |
-| **Level** | `level.info`, `level.save` |
-| **Viewport** | `viewport.camera`, `viewport.set_camera` |
-| **Batch** | `batch.exec` |
+**Level & Viewport**
 
-The `exec` command runs arbitrary Python inside the editor — if a structured command doesn't exist for what you need, `exec` can do it.
+| Command | What it does |
+|---------|-------------|
+| `level.info` | Current level name, path, actor count |
+| `level.save` | Save the level |
+| `viewport.camera` | Get camera position/rotation |
+| `viewport.set_camera` | Move the viewport camera |
 
-### Notable Commands
+**System**
 
-- **`actors.set_color`** — creates a persistent `MaterialInstanceConstant` and applies it. Pass `color: [r, g, b, a]` (0.0–1.0).
-- **`actors.duplicate`** — clones an existing actor with all its meshes, materials, and properties intact. Great for creating copies of creative props.
-- **`batch.exec`** — runs multiple commands in a single undo transaction.
-- **`fix_throttle`** — disables UEFN's "Use Less CPU when in Background" so commands work when UEFN isn't focused.
+| Command | What it does |
+|---------|-------------|
+| `status` | Bridge version, uptime, command count |
+| `exec` | Run arbitrary Python (set `result = ...` to return data) |
+| `batch.exec` | Run multiple commands in a single undo transaction |
+| `undo` / `redo` | Undo or redo the last operation |
+| `reload` | Hot-reload the bridge from disk (no UEFN restart needed) |
+| `fix_throttle` | Disable "Use Less CPU in Background" so commands work when UEFN isn't focused |
 
-## Project Structure
+## Using with AI Agents
+
+The repo includes [`RULES.md`](RULES.md) — a context file that teaches LLMs how to write working UEFN Python. Drop it into your tool:
+
+| Tool | Where to put it |
+|------|----------------|
+| Cursor | `.cursorrules` in project root |
+| Claude Code | `CLAUDE.md` in project root |
+| OpenClaw | Skill's `SKILL.md` |
+| ChatGPT / Gemini / others | Paste into system prompt |
+
+## How It Works Under the Hood
+
+UEFN's Python API (`unreal.*`) can only be called from the main editor thread. The bridge works around this:
+
+1. An HTTP server runs on a background thread, listening on `127.0.0.1:9210`
+2. When a command arrives, it's queued for the main thread
+3. A Slate tick callback picks up the command on the next editor frame and executes it
+4. The result goes back to the HTTP response
+
+Some commands (`status`, `log`, `history`, `fix_throttle`) are thread-safe and skip the queue entirely for instant responses.
+
+On startup, the bridge automatically disables UEFN's background CPU throttle so commands work even when the editor isn't focused.
+
+## Repo Layout
 
 ```
-uefn-python-bridge/
-├── bridge/
-│   ├── server.py       ← HTTP server (runs inside UEFN)
-│   ├── client.py       ← Python client (runs outside UEFN)
-│   └── startup.py      ← Auto-start script (for standard UE5 projects)
-├── tools/
-│   ├── introspect_api.py   ← Dump full UEFN API to JSON
-│   └── generate_stubs.py   ← Generate .pyi for IDE autocomplete
-├── examples/
-│   ├── actors.py
-│   ├── assets.py
-│   ├── materials.py
-│   └── batch_operations.py
-├── RULES.md            ← LLM context file (the main reference)
-└── README.md
+bridge/
+  server.py         ← the HTTP server (runs inside UEFN)
+  client.py         ← Python client library (runs on your machine)
+  startup.py        ← auto-start helper (standard UE5 only, not UEFN)
+
+tools/
+  introspect_api.py ← dump every available unreal.* type to JSON
+  generate_stubs.py ← create .pyi stubs for IDE autocomplete
+
+examples/           ← working examples for actors, assets, materials, batching
+
+RULES.md            ← LLM context file — the cheat sheet for AI agents
 ```
 
-## How It Works
+## IDE Autocomplete
 
-The bridge server runs inside the UEFN editor process:
+Want autocomplete for `unreal.*` in VS Code or Cursor?
 
-1. A background thread runs an HTTP server on `127.0.0.1:9210`
-2. Incoming commands are queued to the main editor thread
-3. A Slate tick callback drains the queue every editor frame
-4. Results are returned via the HTTP response
-
-All `unreal.*` API calls must happen on the main thread — the tick callback ensures this. Thread-safe commands (`status`, `log`, `history`, etc.) bypass the queue and respond instantly.
-
-The bridge starts in direct mode and automatically upgrades to tick mode once Slate ticks are detected (usually within 1–2 seconds of editor startup).
-
-## Tools
-
-### API Introspection
-
-Run inside UEFN to dump all available Python types:
-
-**Tools → Execute Python Script** → select `tools/introspect_api.py`
-
-Output: `<Project>/Saved/uefn_api_introspection.json`
-
-### Type Stub Generation
-
-Generate `.pyi` stubs for IDE autocomplete:
-
-**Tools → Execute Python Script** → select `tools/generate_stubs.py`
-
-Output: `<Project>/Saved/unreal.pyi`
-
-Then in VS Code / Cursor settings:
+1. In UEFN: **Tools → Execute Python Script** → `tools/generate_stubs.py`
+2. Find the generated `unreal.pyi` in `<YourProject>/Saved/`
+3. Add to your editor settings:
 ```json
-{
-  "python.analysis.extraPaths": ["path/to/Saved"]
-}
+{ "python.analysis.extraPaths": ["path/to/Saved"] }
 ```
 
-## Configuration
+## Good to Know
 
-### Custom Port
-
-Edit `PORT_RANGE_START` in `bridge/server.py`, or the bridge will auto-detect
-a free port in the range `9210–9220`.
-
-### Custom Client Port
-
-```python
-from bridge.client import UEFNBridge
-ue = UEFNBridge(port=9215)
-```
-
-## Important Notes
-
-- **UEFN ≠ Unreal Engine.** Many standard UE5 Python APIs are missing or different. The `RULES.md` file documents what works and what doesn't.
-- **Background throttle.** UEFN throttles tick callbacks when not focused. The bridge auto-disables this on start, but if commands time out, run `fix_throttle` or click the UEFN window.
-- **Port reuse.** If UEFN crashes with the bridge running, the port may stay bound until you restart UEFN. The bridge detects and handles zombie ports on next startup.
-- **`init_unreal.py` auto-start** does not work in UEFN (only standard Unreal Engine). Use the manual `py "..."` command in the Output Log.
-
-## Requirements
-
-- UEFN with Python Editor Scripting enabled
-- Python 3.10+ on host for the client library (optional — curl works too)
+- **UEFN ≠ Unreal Engine.** Lots of standard UE5 Python APIs are stripped or changed. `RULES.md` documents what actually works.
+- **Background throttle.** UEFN slows down when it's not focused. The bridge disables this automatically, but if commands start timing out, run `fix_throttle` or just click the UEFN window.
+- **Port conflicts.** If UEFN crashes while the bridge is running, the port might stay bound. Restarting UEFN clears it. The bridge auto-detects this and picks a free port.
+- **Auto-start doesn't work in UEFN.** `init_unreal.py` only works in standard Unreal Engine. In UEFN you run the script manually via **Tools → Execute Python Script** each session.
+- **Hot reload.** Changed `server.py`? Send `{"command": "reload"}` — no need to restart UEFN.
 
 ## Contributing
 
-PRs welcome. If you add new commands to `bridge/server.py`, please:
-1. Use the `@command("category.name")` decorator
+PRs welcome. To add a command:
+
+1. Add a function with the `@command("category.name")` decorator in `server.py`
 2. Add type hints and a docstring
-3. Add an example in `examples/`
-4. Update `RULES.md` with the new command
+3. Add a working example in `examples/`
+4. Update `RULES.md`
 
 ## Support
 
-- Issues: [GitHub Issues](https://github.com/Valid/uefn-python-bridge/issues)
-- Discord: [discord.gg/fchq](https://discord.gg/fchq)
+- [GitHub Issues](https://github.com/Valid/uefn-python-bridge/issues)
+- [Discord](https://discord.gg/fchq)
 
 ## License
 
