@@ -722,6 +722,87 @@ def _cmd_fix_throttle() -> dict:
     return {"success": True}
 
 
+@command("store.install")
+def _cmd_store_install(slug: str, version: str = "latest") -> dict:
+    """Download and install a script from uefn.sh into the current project.
+
+    Args:
+        slug: Script slug from uefn.sh (e.g. 'advanced-matchmaking')
+        version: Version string to install, or 'latest' for the newest
+    """
+    import urllib.request
+    import urllib.error
+    import tempfile
+    import zipfile
+
+    STORE_API = "https://uefn.sh/api/bridge/install"
+
+    # Get the project content directory
+    project = unreal.ValkyrieProjectLibrary.get_main_project()
+    content_dir = unreal.ValkyrieProjectLibrary.get_project_content_dir(project)
+    if not content_dir:
+        return {"ok": False, "error": "Could not determine project content directory"}
+
+    # Request download URL from uefn.sh
+    _log(f"[store] Requesting install: {slug} v{version}")
+    req_data = json.dumps({"slug": slug, "version": version}).encode()
+    req = urllib.request.Request(
+        STORE_API,
+        data=req_data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        resp = urllib.request.urlopen(req, timeout=30)
+        data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read().decode())
+            return {"ok": False, "error": err.get("error", f"HTTP {e.code}")}
+        except Exception:
+            return {"ok": False, "error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    download_url = data.get("url")
+    script_name = data.get("name", slug)
+    version_str = data.get("version", version)
+    if not download_url:
+        return {"ok": False, "error": "No download URL returned"}
+
+    # Download the zip
+    _log(f"[store] Downloading {script_name} v{version_str}...")
+    tmp_path = os.path.join(tempfile.gettempdir(), f"uefn_store_{slug}.zip")
+    try:
+        urllib.request.urlretrieve(download_url, tmp_path)
+    except Exception as e:
+        return {"ok": False, "error": f"Download failed: {e}"}
+
+    # Extract to project content dir
+    dest_folder = os.path.join(content_dir, "Scripts", slug)
+    os.makedirs(dest_folder, exist_ok=True)
+
+    try:
+        with zipfile.ZipFile(tmp_path, "r") as zf:
+            zf.extractall(dest_folder)
+        file_count = len(os.listdir(dest_folder))
+    except Exception as e:
+        return {"ok": False, "error": f"Extraction failed: {e}"}
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    _log(f"[store] Installed {script_name} v{version_str} → {dest_folder} ({file_count} files)")
+    return {
+        "ok": True,
+        "script": script_name,
+        "version": version_str,
+        "folder": dest_folder,
+        "files": file_count,
+    }
+
+
 # ── HTTP layer ─────────────────────────────────────────────────────────────
 
 
@@ -821,7 +902,7 @@ _dispatch_mode: str = "direct"  # "tick" or "direct"
 _tick_health: int = 0           # incremented by tick callback
 
 # Commands that are safe to run from any thread (no Unreal subsystem calls)
-_THREAD_SAFE_COMMANDS = frozenset({"status", "log", "history", "shutdown", "reload", "fix_throttle"})
+_THREAD_SAFE_COMMANDS = frozenset({"status", "log", "history", "shutdown", "reload", "fix_throttle", "store.install"})
 
 
 def _execute_and_respond(rid: str, cmd: str, params: dict) -> dict:
